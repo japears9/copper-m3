@@ -9,6 +9,7 @@ import {
   ArrowRightIcon,
   ArrowUpIcon,
   BrainIcon,
+  FileTextIcon,
   MessageCircleIcon,
   TriangleAlertIcon,
   WrenchIcon,
@@ -34,6 +35,7 @@ import {
   TOOL_LABELS,
 } from "@/lib/copper/assistant/progress";
 import { formatUsd, getPlans, getProducts } from "@/lib/copper/catalog";
+import { DOCUMENTS } from "@/lib/copper/documents";
 import { cn } from "@/lib/utils";
 
 const STARTERS = [
@@ -148,7 +150,7 @@ export function AskCopper({ aiConfigured }: { aiConfigured: boolean }) {
                   Ask Copper
                 </SheetTitle>
                 <SheetDescription className="text-xs text-white/70">
-                  Prices, totals and stock, checked with tools.
+                  Prices, stock and support answers, with sources.
                 </SheetDescription>
               </div>
               <SheetClose asChild>
@@ -197,8 +199,8 @@ export function AskCopper({ aiConfigured }: { aiConfigured: boolean }) {
                   <div className="space-y-2">
                     {turns.length === 0 && (
                       <p className="text-muted-foreground text-sm">
-                        Hi, I&apos;m Copper! Ask me about prices, totals or
-                        stock. Try one of these:
+                        Hi, I&apos;m Copper! Ask me about prices, stock or how
+                        to use your device. Try one of these:
                       </p>
                     )}
                     {STARTERS.map((starter) => (
@@ -225,7 +227,7 @@ export function AskCopper({ aiConfigured }: { aiConfigured: boolean }) {
                   aria-label="Your question"
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
-                  placeholder="Ask about prices or stock…"
+                  placeholder="Ask about prices, stock or support…"
                   className="bg-background focus-visible:ring-ring h-10 flex-1 rounded-full border px-4 text-sm outline-none focus-visible:ring-2"
                 />
                 <Button
@@ -383,7 +385,7 @@ function Answer({
             </div>
           )}
           <p className="text-sm whitespace-pre-wrap">
-            {reply}
+            <WithCitations text={reply} />
             {working && (
               <span className="bg-primary ml-0.5 inline-block h-4 w-0.5 animate-pulse align-middle" />
             )}
@@ -421,6 +423,49 @@ function Station({
       {children}
     </section>
   );
+}
+
+/** "[Copper Home User Guide, p. 9]" → that document's title and page. */
+const CITATION = /\[([^\[\]]+?),\s*p(?:age|\.)?\s*(\d+)\]/g;
+
+/** The PDF a cited title refers to, matched loosely ("Terms and Conditions" works too). */
+function documentFor(title: string) {
+  const wanted = title.trim().toLowerCase();
+  return (
+    DOCUMENTS.find((d) => d.title.toLowerCase() === wanted) ??
+    DOCUMENTS.find(
+      (d) =>
+        d.title.toLowerCase().includes(wanted) ||
+        wanted.includes(d.title.toLowerCase()),
+    )
+  );
+}
+
+/** Copper's reply, with each [Document, p. N] citation linked to that PDF page. */
+function WithCitations({ text }: { text: string }) {
+  const parts: ReactNode[] = [];
+  let last = 0;
+  for (const match of text.matchAll(CITATION)) {
+    const doc = documentFor(match[1]);
+    if (!doc) continue;
+    parts.push(text.slice(last, match.index));
+    parts.push(
+      <a
+        key={match.index}
+        data-testid="citation"
+        href={`${doc.file}#page=${match[2]}`}
+        target="_blank"
+        rel="noreferrer"
+        className="bg-primary text-primary-foreground mx-0.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-baseline text-[11px] font-semibold whitespace-nowrap no-underline hover:opacity-90"
+      >
+        <FileTextIcon className="size-3" />
+        {doc.title} · p. {match[2]}
+      </a>,
+    );
+    last = match.index + match[0].length;
+  }
+  parts.push(text.slice(last));
+  return <>{parts}</>;
 }
 
 /** Thought summaries arrive as markdown: render **bold** and `code`. */
@@ -605,6 +650,36 @@ function ToolOutput({ name, output }: { name: string; output: any }) {
       </div>
     );
   }
+  if (name === "search_docs" && output?.passages)
+    return (
+      <ol className="space-y-2 text-xs">
+        {output.passages.map((p: any, i: number) => (
+          <li
+            key={i}
+            data-testid="doc-passage"
+            className="bg-background rounded-lg border p-2"
+          >
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <a
+                href={p.url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary inline-flex items-center gap-1 font-semibold hover:underline"
+              >
+                <FileTextIcon className="size-3" />
+                {p.title} · p. {p.page}
+              </a>
+              <span className="text-muted-foreground font-mono">
+                {Math.round(p.score * 100)}% match
+              </span>
+            </div>
+            <p className="text-muted-foreground line-clamp-3">
+              {String(p.text).replace(/^[^:]+:\s*/, "")}
+            </p>
+          </li>
+        ))}
+      </ol>
+    );
   // A tool without its own layout yet: show what came back as plain text.
   return (
     <pre className="max-h-48 overflow-auto text-xs whitespace-pre-wrap">

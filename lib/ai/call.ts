@@ -1,5 +1,5 @@
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { generateText, Output, streamText } from "ai";
+import { embedMany, generateText, Output, streamText } from "ai";
 import type { z } from "zod";
 import { defaultModel, MODELS, type ModelId } from "@/lib/ai/models";
 import { costUsd } from "@/lib/ai/pricing";
@@ -145,6 +145,62 @@ export function callStream(info: CallInfo, options: StreamOptions) {
     onFinish: ({ totalUsage }) => logCall(row(true, totalUsage)),
     onError: () => logCall(row(false)),
   });
+}
+
+/** Gemini's embedding model: turns text into a list of numbers (a vector). */
+export const EMBEDDING_MODEL = "gemini-embedding-001";
+/** How many numbers in each vector. Smaller keeps the doc index file small. */
+export const EMBEDDING_DIMENSIONS = 768;
+
+/**
+ * Embeds texts with Gemini, so texts with similar meanings get similar
+ * vectors. Use "document" for passages being indexed and "query" for a
+ * question. Logged to ai_calls like every other call.
+ * Example: callEmbed({ module: 3, feature: "search-docs" }, [question], "query")
+ */
+export async function callEmbed(
+  info: Omit<CallInfo, "model">,
+  values: string[],
+  kind: "document" | "query",
+): Promise<number[][]> {
+  const googleKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim();
+  if (!googleKey) throw new AiNotConfiguredError();
+  const started = performance.now();
+  const log = (ok: boolean, tokens: number | null) =>
+    console.info(
+      "[ai_calls]",
+      JSON.stringify({
+        module: info.module,
+        feature: info.feature,
+        model: `google/${EMBEDDING_MODEL}`,
+        input_tokens: tokens,
+        output_tokens: 0,
+        // Gemini embeddings: $0.15 per million input tokens.
+        cost_usd: tokens === null ? null : (tokens * 0.15) / 1_000_000,
+        latency_ms: Math.round(performance.now() - started),
+        ok,
+        created_at: new Date().toISOString(),
+      }),
+    );
+  try {
+    const { embeddings, usage } = await embedMany({
+      model: createGoogleGenerativeAI({ apiKey: googleKey }).embedding(
+        EMBEDDING_MODEL,
+      ),
+      values,
+      providerOptions: {
+        google: {
+          outputDimensionality: EMBEDDING_DIMENSIONS,
+          taskType: kind === "query" ? "RETRIEVAL_QUERY" : "RETRIEVAL_DOCUMENT",
+        },
+      },
+    });
+    log(true, usage?.tokens ?? null);
+    return embeddings;
+  } catch (error) {
+    log(false, null);
+    throw error;
+  }
 }
 
 // Asking for some thinking (rather than letting the model decide) is what

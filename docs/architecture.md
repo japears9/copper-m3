@@ -96,3 +96,29 @@ each step. Module 3 teaches it to answer from the customer documents.
 | Instructions | `lib/copper/assistant/instructions.ts` | `COPPER_INSTRUCTIONS`. Copper says it can't help yet with warranty, setup, troubleshooting or privacy |
 | Data | `lib/copper/inventory.ts`, `lib/copper/documents.ts` | Stock from `lib/copper/data/inventory.json`; `DOCUMENTS`: the four customer documents and their PDF paths under `public/docs/`. The PDFs are added in class |
 | AI calls | `{ module: 2, feature: "ask-copper" }` | One streamed call per question |
+
+## Module 3: Ask Copper reads the docs
+
+**Summary:** Ask Copper answers setup, troubleshooting, warranty and policy
+questions from the four support PDFs, and cites the page each sentence came
+from. This is retrieval-augmented generation (RAG) with no database.
+
+| Piece | Where | What it does |
+|---|---|---|
+| Support PDFs | `public/docs/*.pdf` | Served at `/docs/<id>.pdf`; citations link to `#page=N` |
+| Index builder | `scripts/build-doc-index.mts` (`npm run docs:index`) | Cuts each page into passages (`lib/copper/docs/passages.ts`), embeds them, saves the index |
+| Doc index | `lib/copper/data/doc-index.json` | 84 passages with title, page and a 768-number vector; loaded into memory |
+| Search | `lib/copper/docs/search.ts` | Embeds the question, ranks passages by cosine similarity, returns the top 5 |
+| Tool | `search_docs` in `lib/copper/assistant/tools.ts` | Copper calls it for support and policy questions |
+| AI calls | `callEmbed` in `lib/ai/call.ts` (module 3, `build-doc-index` / `search-docs`) | `gemini-embedding-001`; one tiny call per question |
+
+**Data flow:** question → Copper calls `search_docs` → the question is embedded
+→ the 5 closest passages come back with links → Copper answers only from them,
+ending each sentence with `[Document, p. N]` → the panel turns each citation
+into a link to that PDF page.
+
+**Decisions and trade-offs:** four documents fit in memory, so a JSON file
+beats a vector database. If no passage answers the question, Copper says
+"I couldn't find that in our support docs" instead of guessing. The model is
+set with `AI_MODEL=google/gemini-3-flash`, because Google no longer offers
+Gemini 2.5 Flash to new keys.

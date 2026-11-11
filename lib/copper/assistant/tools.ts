@@ -10,6 +10,7 @@ import {
   type Plan,
   type ProductId,
 } from "@/lib/copper/catalog";
+import { searchDocs } from "@/lib/copper/docs/search";
 import { readInventory } from "@/lib/copper/inventory";
 
 export type ProductList = {
@@ -200,5 +201,18 @@ export const copperTools = {
       "Checks today's stock for a Copper product, for every color or just one.",
     inputSchema: checkAvailabilityInput,
     execute: async (input) => checkAvailability(input),
+  }),
+  search_docs: tool({
+    description:
+      "Searches Copper State Labs' support documents (the Copper Home and Copper Notes user guides, the Terms and Conditions, and the Copper Plus FAQ) by meaning. Returns the 5 closest passages, each with its document title, page number and a link to that page. Use it for setup, troubleshooting, error codes, features, warranty, returns, refunds, billing, privacy and other policy questions.",
+    inputSchema: z.object({
+      query: z
+        .string()
+        .min(2)
+        .describe(
+          "What to look for, in the customer's words, e.g. 'C-31 error on Copper Notes'",
+        ),
+    }),
+    execute: async ({ query }) => searchDocs(query),
   }),
 };
