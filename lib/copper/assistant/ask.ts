@@ -29,7 +29,7 @@ const MAX_STEPS = 5;
  * "slow down", wait and try again (about 2, 4, 8 and 16 seconds) instead of
  * failing.
  */
-export const MAX_RETRIES = 4;
+const MAX_RETRIES = 4;
 
 const SORRY = "Sorry, something went wrong on my end. Please try again.";
 
