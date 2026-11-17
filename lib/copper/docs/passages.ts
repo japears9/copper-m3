@@ -33,15 +33,21 @@ export function cutPage(title: string, page: number, text: string): string[] {
     .replace(/\s+/g, " ")
     .split(/(?<=[.!?:])\s+(?=[A-Z0-9"•])/);
 
-  const passages: string[] = [];
-  let current = "";
+  const groups: string[][] = [];
+  let current: string[] = [];
   for (const sentence of sentences) {
-    if (current && current.length + sentence.length > TARGET) {
-      passages.push(current);
-      current = "";
+    const length = current.join(" ").length;
+    if (current.length && length + sentence.length > TARGET) {
+      groups.push(current);
+      current = [];
     }
-    current = current ? `${current} ${sentence}` : sentence;
+    current.push(sentence);
   }
-  if (current) passages.push(current);
-  return passages.map((p) => `${prefix} ${p}`);
+  if (current.length) groups.push(current);
+  // Each passage also gets the next passage's first sentence, so a rule that
+  // spans the cut (like a table row) is never split in half.
+  return groups.map((group, i) => {
+    const next = groups[i + 1]?.[0];
+    return `${prefix} ${[...group, ...(next ? [next] : [])].join(" ")}`;
+  });
 }

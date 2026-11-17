@@ -8,9 +8,14 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   ArrowUpIcon,
+  BookOpenIcon,
   BrainIcon,
+  ExternalLinkIcon,
   FileTextIcon,
+  LifeBuoyIcon,
   MessageCircleIcon,
+  SearchXIcon,
+  ShieldCheckIcon,
   TriangleAlertIcon,
   WrenchIcon,
   XIcon,
@@ -35,13 +40,29 @@ import {
   TOOL_LABELS,
 } from "@/lib/copper/assistant/progress";
 import { formatUsd, getPlans, getProducts } from "@/lib/copper/catalog";
-import { DOCUMENTS } from "@/lib/copper/documents";
+import { type CopperDocument, DOCUMENTS } from "@/lib/copper/documents";
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 
 const STARTERS = [
   "How much is Copper Home with Copper Plus, paid yearly, for 2 years?",
   "Is Copper Notes in Night Sky in stock?",
   "Is Copper Plus cheaper monthly or yearly?",
+];
+
+/** Short chips for common support questions, answered from the PDFs. */
+const SUPPORT_STARTERS = [
+  { label: "Error C-47", question: "My Copper Home shows C-47. What do I do?" },
+  { label: "Change Wi-Fi", question: "How do I reset Wi-Fi on Copper Home?" },
+  {
+    label: "Annual refund",
+    question: "Can I get a refund on an annual Copper Plus plan?",
+  },
+  { label: "Warranty", question: "How long is the warranty on Copper Notes?" },
 ];
 
 type Turn = { question: string; progress: Progress };
@@ -213,6 +234,27 @@ export function AskCopper({ aiConfigured }: { aiConfigured: boolean }) {
                         {starter}
                       </button>
                     ))}
+                    {turns.length === 0 && useTools && (
+                      <div className="pt-3">
+                        <p className="text-muted-foreground mb-2 flex items-center gap-1.5 text-[11px] font-semibold tracking-widest uppercase">
+                          <LifeBuoyIcon className="size-3.5" /> Help from our
+                          support docs
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {SUPPORT_STARTERS.map(({ label, question }) => (
+                            <button
+                              key={label}
+                              type="button"
+                              title={question}
+                              onClick={() => send(question)}
+                              className="border-accent/40 bg-accent/10 hover:bg-accent rounded-full border px-3 py-1 text-xs font-medium transition-colors hover:text-white"
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -265,6 +307,8 @@ function Answer({
     steps.filter((s): s is ToolStep => s.type === "tool").map((s) => s.name),
   );
   const working = status === "working";
+  const sources = sourcesOf(reply, steps);
+  const notFound = /couldn.t find that in our support docs/i.test(reply);
   let toolCount = 0;
   return (
     <div className="space-y-3">
@@ -384,12 +428,21 @@ function Answer({
               </p>
             </div>
           )}
-          <p className="text-sm whitespace-pre-wrap">
-            <WithCitations text={reply} />
+          {!working && sources.length > 0 && (
+            <p className="text-accent mb-2 flex items-center gap-1.5 text-[11px] font-semibold tracking-wide uppercase">
+              <ShieldCheckIcon className="size-3.5" />
+              Checked against {sources.length}{" "}
+              {sources.length === 1 ? "page" : "pages"} of our support docs
+            </p>
+          )}
+          <p className="text-sm leading-relaxed whitespace-pre-wrap">
+            <WithCitations text={reply} sources={sources} />
             {working && (
               <span className="bg-primary ml-0.5 inline-block h-4 w-0.5 animate-pulse align-middle" />
             )}
           </p>
+          {!working && notFound && <NotInDocs />}
+          {!working && sources.length > 0 && <SourceList sources={sources} />}
         </div>
       )}
     </div>
@@ -441,31 +494,263 @@ function documentFor(title: string) {
   );
 }
 
-/** Copper's reply, with each [Document, p. N] citation linked to that PDF page. */
-function WithCitations({ text }: { text: string }) {
+/** One page Copper cited, numbered in the order it first appears. */
+type Source = {
+  number: number;
+  doc: CopperDocument;
+  page: number;
+  url: string;
+  /** The passage search_docs found on that page, so readers can check it. */
+  quote: string | null;
+};
+
+const sourceKey = (doc: CopperDocument, page: number) => `${doc.id}#${page}`;
+
+/** The pages a reply cites, each with the passage Copper read there. */
+function sourcesOf(reply: string, steps: Progress["steps"]): Source[] {
+  /* eslint-disable @typescript-eslint/no-explicit-any -- tool outputs arrive untyped from the stream */
+  const found = steps
+    .filter((s): s is ToolStep => s.type === "tool" && s.name === "search_docs")
+    .flatMap((s) => ((s.output as any)?.passages ?? []) as any[]);
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+  // Everything Copper said that cites each page, to find the matching quote.
+  const claims = new Map<string, string>();
+  const sources = new Map<string, Source>();
+  let last = 0;
+  for (const match of reply.matchAll(CITATION)) {
+    const doc = documentFor(match[1]);
+    const page = Number(match[2]);
+    const claim = reply.slice(last, match.index);
+    last = match.index + match[0].length;
+    if (!doc) continue;
+    const key = sourceKey(doc, page);
+    claims.set(key, `${claims.get(key) ?? ""} ${claim}`);
+    if (sources.has(key)) continue;
+    sources.set(key, {
+      number: sources.size + 1,
+      doc,
+      page,
+      url: `${doc.file}#page=${page}`,
+      quote: null,
+    });
+  }
+  for (const [key, source] of sources) {
+    const passages = found
+      .filter(
+        (p) =>
+          documentFor(String(p.title))?.id === source.doc.id &&
+          p.page === source.page,
+      )
+      .map((p) => String(p.text).replace(/^[^:]+:\s*/, ""));
+    source.quote = bestSentence(passages, claims.get(key) ?? "");
+  }
+  return [...sources.values()];
+}
+
+const wordsOf = (text: string) =>
+  new Set(text.toLowerCase().match(/[a-z0-9-]{3,}/g) ?? []);
+
+/**
+ * The sentence on the cited page that shares the most words with what
+ * Copper said, plus the next one when it's short (a table row's answer).
+ */
+function bestSentence(passages: string[], claim: string): string | null {
+  const said = wordsOf(claim);
+  let best: { text: string; score: number } | null = null;
+  for (const passage of passages) {
+    const sentences = passage.split(/(?<=[.!?])\s+/);
+    sentences.forEach((sentence, i) => {
+      // One sentence, or two in a row (a rule can span a table row).
+      for (const text of [sentence, `${sentence} ${sentences[i + 1] ?? ""}`]) {
+        const words = wordsOf(text);
+        const shared = [...words].filter((w) => said.has(w)).length;
+        // Shared words count most; a shorter quote wins a tie.
+        const score = shared * 10 - words.size * 0.3;
+        if (!best || score > best.score) best = { text: text.trim(), score };
+      }
+    });
+  }
+  if (!best) return null;
+  // Drop a next section's heading caught at the end, like "4.7 Price changes."
+  const text = (best as { text: string }).text
+    .replace(/\s+\d+\.\d+\s+[A-Z][A-Za-z ]{0,40}\.?$/, "")
+    .trim();
+  return focus(text, said);
+}
+
+/**
+ * Long quotes (a whole table read as one line) start at the words Copper
+ * used, so the part that matters isn't cut off. Codes like C-31 come first.
+ */
+function focus(text: string, said: Set<string>): string {
+  if (text.length <= QUOTE_LENGTH) return text;
+  const lower = text.toLowerCase();
+  const shared = [...said].filter((w) => lower.includes(w));
+  const anchor =
+    shared.find((w) => /\d/.test(w) && /[a-z]/.test(w)) ??
+    shared.sort((a, b) => lower.indexOf(a) - lower.indexOf(b))[0];
+  const at = anchor ? lower.indexOf(anchor) : 0;
+  if (at < 30) return text;
+  const start = text.lastIndexOf(" ", at - 1) + 1;
+  return `…${text.slice(start)}`;
+}
+
+/** Each kind of document gets its own color, so sources are easy to tell apart. */
+const KIND_STYLE: Record<CopperDocument["kind"], string> = {
+  "User guide": "bg-accent text-white",
+  Terms: "bg-chart-5 text-white dark:text-chart-5 dark:bg-white",
+  FAQ: "bg-chart-4 text-chart-5",
+};
+
+/**
+ * Copper's reply. Each [Document, p. N] citation becomes a small numbered
+ * marker: hover it to read the passage, click it to open that PDF page.
+ */
+function WithCitations({ text, sources }: { text: string; sources: Source[] }) {
   const parts: ReactNode[] = [];
   let last = 0;
   for (const match of text.matchAll(CITATION)) {
     const doc = documentFor(match[1]);
-    if (!doc) continue;
-    parts.push(text.slice(last, match.index));
+    const source =
+      doc &&
+      sources.find((s) => s.doc.id === doc.id && s.page === Number(match[2]));
+    if (!doc || !source) continue;
+    // Drop the space before the marker so it sits on the word, like a
+    // footnote, and keep punctuation Copper put after the citation in front
+    // of it, so a "." never starts the next line.
+    const after = text.slice(match.index + match[0].length);
+    const punctuation = after.match(/^[.,;:!?]+/)?.[0] ?? "";
+    const before = text.slice(last, match.index).replace(/\s+$/, "");
+    // The last word, its punctuation and the marker never split across lines.
+    const lastWord = before.match(/\S*$/)?.[0] ?? "";
+    parts.push(before.slice(0, before.length - lastWord.length));
     parts.push(
-      <a
-        key={match.index}
-        data-testid="citation"
-        href={`${doc.file}#page=${match[2]}`}
-        target="_blank"
-        rel="noreferrer"
-        className="bg-primary text-primary-foreground mx-0.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-baseline text-[11px] font-semibold whitespace-nowrap no-underline hover:opacity-90"
-      >
-        <FileTextIcon className="size-3" />
-        {doc.title} · p. {match[2]}
-      </a>,
+      <span key={match.index} className="whitespace-nowrap">
+        {lastWord + punctuation}
+        <Marker source={source} />
+      </span>,
     );
-    last = match.index + match[0].length;
+    last = match.index + match[0].length + punctuation.length;
   }
   parts.push(text.slice(last));
   return <>{parts}</>;
+}
+
+/** A numbered citation: hover it to read the passage, click to open the page. */
+function Marker({ source }: { source: Source }) {
+  const { doc } = source;
+  return (
+    <HoverCard openDelay={150} closeDelay={100}>
+      <HoverCardTrigger asChild>
+        <a
+          data-testid="citation"
+          href={source.url}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`Source ${source.number}: ${doc.title}, page ${source.page}`}
+          className="border-primary text-primary hover:bg-primary hover:text-primary-foreground mx-0.5 inline-flex size-[18px] -translate-y-1.5 items-center justify-center rounded-full border text-[10px] leading-none font-bold no-underline transition-colors"
+        >
+          {source.number}
+        </a>
+      </HoverCardTrigger>
+      <HoverCardContent className="w-72 p-0">
+        <SourceHeader source={source} />
+        <p className="border-primary text-muted-foreground mx-3 mb-3 border-l-2 pl-2 text-xs italic">
+          {source.quote
+            ? `“${clip(source.quote, QUOTE_LENGTH)}”`
+            : "Open the page to read it."}
+        </p>
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
+
+/** How many characters of a quote to show. */
+const QUOTE_LENGTH = 200;
+
+const clip = (text: string, max: number) =>
+  text.length > max ? `${text.slice(0, max).replace(/\s+\S*$/, "")}…` : text;
+
+function SourceHeader({ source }: { source: Source }) {
+  return (
+    <div className="flex items-center gap-2 px-3 pt-3 pb-2">
+      <span className="bg-primary text-primary-foreground flex size-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold">
+        {source.number}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-xs font-semibold">{source.doc.title}</p>
+        <p className="text-muted-foreground flex items-center gap-1.5 text-[10px]">
+          <span
+            className={cn(
+              "rounded px-1 font-semibold uppercase",
+              KIND_STYLE[source.doc.kind],
+            )}
+          >
+            {source.doc.kind}
+          </span>
+          Page {source.page}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** Under the answer: every page Copper cited, with the passage it read there. */
+function SourceList({ sources }: { sources: Source[] }) {
+  return (
+    <section
+      data-testid="source-list"
+      className="mt-4 -mx-4 -mb-4 rounded-b-2xl border-t border-dashed"
+    >
+      <p className="text-muted-foreground flex items-center gap-1.5 px-4 pt-3 text-[11px] font-semibold tracking-widest uppercase">
+        <BookOpenIcon className="size-3.5" /> Sources
+      </p>
+      <ol className="space-y-2 p-3">
+        {sources.map((source) => (
+          <li
+            key={source.number}
+            className="bg-secondary/60 overflow-hidden rounded-xl border"
+          >
+            <SourceHeader source={source} />
+            {source.quote && (
+              <p className="text-muted-foreground line-clamp-3 px-3 text-xs">
+                “{clip(source.quote, QUOTE_LENGTH)}”
+              </p>
+            )}
+            <a
+              href={source.url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-primary flex items-center gap-1 px-3 py-2 text-xs font-semibold hover:underline"
+            >
+              Open page {source.page} <ExternalLinkIcon className="size-3" />
+            </a>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+/** When the docs don't cover it, Copper says so and points to a person. */
+function NotInDocs() {
+  return (
+    <div
+      data-testid="not-in-docs"
+      className="border-chart-4 bg-chart-4/10 mt-3 flex gap-3 rounded-xl border border-dashed p-3 text-xs"
+    >
+      <SearchXIcon className="text-chart-3 mt-0.5 size-4 shrink-0" />
+      <div>
+        <p className="font-semibold">Not in our support docs</p>
+        <p className="text-muted-foreground mt-0.5">
+          Copper only answers from the guides, terms and FAQ, so it won&apos;t
+          guess. A person on the Copper Crew can help: open the Copper app and
+          go to{" "}
+          <span className="text-foreground font-medium">Settings › Help</span>.
+        </p>
+      </div>
+    </div>
+  );
 }
 
 /** Thought summaries arrive as markdown: render **bold** and `code`. */
