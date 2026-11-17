@@ -23,6 +23,14 @@ export type AskCopperResult = { progress: Live<Progress> };
 /** At most this many model steps (tool calls plus the reply) per question. */
 const MAX_STEPS = 5;
 
+/**
+ * The free Gemini key allows only a few requests a minute, and one question
+ * can take three (search, maybe search again, answer). When Google says
+ * "slow down", wait and try again (about 2, 4, 8 and 16 seconds) instead of
+ * failing.
+ */
+export const MAX_RETRIES = 4;
+
 const SORRY = "Sorry, something went wrong on my end. Please try again.";
 
 export async function askCopper({
@@ -48,6 +56,7 @@ export async function askCopper({
     { module: 2, feature: "ask-copper" },
     {
       messages,
+      maxRetries: MAX_RETRIES,
       providerOptions: THOUGHT_SUMMARIES,
       ...(useTools && {
         instructions: COPPER_INSTRUCTIONS,
@@ -116,7 +125,12 @@ export async function askCopper({
       }
       progress.status = "done";
       if (!progress.reply.trim()) progress.reply = SORRY;
-    } catch {
+    } catch (error) {
+      // The reason goes to the server log (never the key), so it can be fixed.
+      console.error(
+        "[ask-copper] failed:",
+        error instanceof Error ? error.message : String(error),
+      );
       progress.status = "error";
       if (!progress.reply.trim()) progress.reply = SORRY;
     }

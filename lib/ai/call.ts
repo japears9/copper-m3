@@ -188,6 +188,8 @@ export async function callEmbed(
         EMBEDDING_MODEL,
       ),
       values,
+      // Free keys are rate-limited; wait and retry rather than fail.
+      maxRetries: 4,
       providerOptions: {
         google: {
           outputDimensionality: EMBEDDING_DIMENSIONS,
